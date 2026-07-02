@@ -2,8 +2,8 @@
 # Top contributors requested as owners so PRs touching these areas auto-request review
 
 # Owners for workspace/editor configuration and CI
-.vscode/ @vardhan1228 @adinahamjad18127-maker
-.github/workflows/ @vardhan1228 @adinahamjad18127-maker
+.vscode/ @vardhan1228 @CloudTechDevOps
+.github/workflows/ @vardhan1228 @CloudTechDevOps
 
 # General fallback owners for everything else
-* @vardhan1228 @adinahamjad18127-maker
+* @vardhan1228 @CloudTechDevOps
