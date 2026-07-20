@@ -305,7 +305,7 @@ jobs:
             # 7. Start the container (Executes as non-root user via Dockerfile)
             docker run -d \
               --name frontend-container \
-              -p 8501:8501 \
+              -p 80:8501 \
               -e API_URL="http://localhost:8084" \
               $REGISTRY_IMAGE
 
