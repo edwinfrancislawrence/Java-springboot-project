@@ -1,10 +1,195 @@
-name: Frontend to EC2
+# name: Frontend to EC2
+
+# on:
+#   # push:
+#   #   branches:
+#   #     - main
+
+#   workflow_dispatch:
+
+# jobs:
+#   deploy:
+#     runs-on: ubuntu-latest
+
+#     steps:
+#       - name: Checkout Repository
+#         uses: actions/checkout@v4
+
+#       # ######################################################
+#       # # SonarQube Scan
+#       # ######################################################
+
+#       - name: Set up Java
+#         uses: actions/setup-java@v4
+#         with:
+#           distribution: temurin
+#           java-version: 17
+
+#       - name: SonarQube Scan
+#         uses: SonarSource/sonarqube-scan-action@v5
+#         env:
+#           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+#           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+#         with:
+#           args: >
+#             -Dsonar.projectKey=frontend
+#             -Dsonar.projectName=frontend
+#             -Dsonar.sources=frontend
+
+#       ######################################################
+#       # Quality Gate
+#       ######################################################
+
+#       - name: SonarQube Quality Gate
+#         uses: SonarSource/sonarqube-quality-gate-action@v1.2.0
+#         timeout-minutes: 10
+#         env:
+#           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+# ######################################################
+#       # AWS ECR Build and Push Setup
+#       ######################################################
+
+#       - name: Configure AWS Credentials
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#           aws-region: us-west-2 # Replace with your ECR registry region if different
+
+#       - name: Login to Amazon ECR
+#         id: login-ecr
+#         uses: aws-actions/amazon-ecr-login@v2
+
+#       - name: Build, Tag, and Push Frontend Image to ECR
+#         env:
+#           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+#           ECR_REPOSITORY: frontend # Change to forntend if spelled exactly that way in AWS
+#           IMAGE_TAG: ${{ github.run_number }}
+#         run: |
+#           # Moves into your frontend folder context to build the Dockerfile
+#           cd frontend
+#           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+#           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+#       ######################################################
+#       # Deploy
+#       ######################################################
+
+#       - name: Deploy via SSH
+#         uses: appleboy/ssh-action@v1.1.0
+#         with:
+#           host: ${{ secrets.EC2_HOST }}
+#           username: ec2-user
+#           key: ${{ secrets.EC2_KEY }}
+#           script: |
+#             set -e
+
+#             APP_DIR=/home/ec2-user/front
+#             REPO_NAME=Java-springboot-project
+#             REPO_URL=https://github.com/edwinfrancislawrence/Java-springboot-project.git
+
+#             echo "🚀 Starting deployment..."
+
+#             mkdir -p $APP_DIR
+#             cd $APP_DIR
+
+#             if [ -d "$REPO_NAME/.git" ]; then
+#               cd $REPO_NAME
+#               git reset --hard
+#               git pull origin main
+#             else
+#               git clone $REPO_URL
+#               cd $REPO_NAME
+#             fi
+
+#             sudo dnf install -y python3 python3-pip
+
+#             cd frontend
+
+#             if [ ! -d "venv" ]; then
+#               python3 -m venv venv
+#             fi
+
+#             source venv/bin/activate
+
+#             pip install --upgrade pip
+#             pip install -r requirements.txt
+
+#             sudo tee /etc/systemd/system/frontend.service > /dev/null <<EOF
+#             [Unit]
+#             Description=Streamlit Frontend App
+#             After=network.target
+
+#             [Service]
+#             User=ec2-user
+#             WorkingDirectory=/home/ec2-user/front/Java-springboot-project/frontend
+
+#             ExecStart=/bin/bash -c 'source /home/ec2-user/front/Java-springboot-project/frontend/venv/bin/activate && streamlit run app.py --server.port=8501 --server.address=0.0.0.0'
+
+#             Environment=API_URL=http://localhost:8084
+
+#             Restart=always
+#             RestartSec=5
+
+#             StandardOutput=append:/home/ec2-user/frontend.log
+#             StandardError=append:/home/ec2-user/frontend-error.log
+
+#             [Install]
+#             WantedBy=multi-user.target
+#             EOF
+
+#             sudo systemctl daemon-reload
+#             sudo systemctl enable frontend
+#             sudo systemctl restart frontend
+
+#             echo "Deployment completed."
+
+#       ######################################################
+#       # Email Notification
+#       ######################################################
+
+#       - name: 📧 Send Deployment Report
+#         if: success() || failure()
+#         uses: dawidd6/action-send-mail@v3
+#         with:
+#           server_address: smtp.gmail.com
+#           server_port: 465
+#           secure: true
+#           username: ${{ secrets.EMAIL_USERNAME }}
+#           password: ${{ secrets.EMAIL_PASSWORD }}
+#           subject: AI Deployment Report - ${{ github.repository }}
+#           to: ${{ secrets.EMAIL_TO }}
+#           from: ${{ secrets.EMAIL_USERNAME }}
+
+#           body: |
+#             🚀 AI Deployment Report
+
+#             Repository : ${{ github.repository }}
+#             Workflow   : ${{ github.workflow }}
+#             Branch     : ${{ github.ref_name }}
+#             Commit     : ${{ github.sha }}
+
+#             Status     : ${{ job.status }}
+
+#             Triggered By : ${{ github.actor }}
+#             Run Number   : ${{ github.run_number }}
+
+#             SonarQube Analysis : Completed
+#             Quality Gate       : Passed
+
+#             Deployment Target  : EC2
+#             Frontend URL       : http://${{ secrets.EC2_HOST }}:8501
+
+#             Regards,
+#             GitHub Actions
+
+
+#====================================================
+
+name: Frontend to EC2 (Dockerized via ECR)
 
 on:
-  # push:
-  #   branches:
-  #     - main
-
   workflow_dispatch:
 
 jobs:
@@ -14,11 +199,12 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # ######################################################
-      # # SonarQube Scan
-      # ######################################################
-
+      # ==========================================
+      # SONARQUBE QUALITY CHECKS
+      # ==========================================
       # - name: Set up Java
       #   uses: actions/setup-java@v4
       #   with:
@@ -36,26 +222,21 @@ jobs:
       #       -Dsonar.projectName=frontend
       #       -Dsonar.sources=frontend
 
-      # ######################################################
-      # # Quality Gate
-      # ######################################################
-
       # - name: SonarQube Quality Gate
       #   uses: SonarSource/sonarqube-quality-gate-action@v1.2.0
       #   timeout-minutes: 10
       #   env:
       #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-######################################################
-      # AWS ECR Build and Push Setup
-      ######################################################
-
+      # ==========================================
+      # AWS ECR BUILD & PUSH (RUNS IN GITHUB CLOUD)
+      # ==========================================
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-west-2 # Replace with your ECR registry region if different
+          aws-region: us-west-2
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -64,18 +245,16 @@ jobs:
       - name: Build, Tag, and Push Frontend Image to ECR
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: frontend # Change to forntend if spelled exactly that way in AWS
-          IMAGE_TAG: ${{ github.run_number }}
+          ECR_REPOSITORY: frontend
+          IMAGE_TAG: latest # Using latest allows the EC2 runner to pull it predictably
         run: |
-          # Moves into your frontend folder context to build the Dockerfile
           cd frontend
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
-      ######################################################
-      # Deploy
-      ######################################################
-
+      # ==========================================
+      # DEPLOYMENT ENGINE (RUNS VIA SSH ON EC2)
+      # ==========================================
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.1.0
         with:
@@ -84,73 +263,59 @@ jobs:
           key: ${{ secrets.EC2_KEY }}
           script: |
             set -e
-
-            APP_DIR=/home/ec2-user/front
-            REPO_NAME=Java-springboot-project
-            REPO_URL=https://github.com/edwinfrancislawrence/Java-springboot-project.git
-
             echo "🚀 Starting deployment..."
 
-            mkdir -p $APP_DIR
-            cd $APP_DIR
-
-            if [ -d "$REPO_NAME/.git" ]; then
-              cd $REPO_NAME
-              git reset --hard
-              git pull origin main
-            else
-              git clone $REPO_URL
-              cd $REPO_NAME
+            # 1. Ensure Docker is installed on the host machine
+            if ! command -v docker &> /dev/null; then
+              sudo dnf install -y docker || sudo yum install -y docker
+              sudo systemctl enable docker --now
+              sudo usermod -aG docker ec2-user
             fi
 
-            sudo dnf install -y python3 python3-pip
-
-            cd frontend
-
-            if [ ! -d "venv" ]; then
-              python3 -m venv venv
+            # 2. Install AWS CLI on the host machine to allow ECR login
+            if ! command -v aws &> /dev/null; then
+              sudo dnf install -y aws-cli || sudo yum install -y awscli
             fi
 
-            source venv/bin/activate
+            # 3. Clean up the deprecated systemd service if it was running before
+            if systemctl is-active --quiet frontend; then
+              sudo systemctl stop frontend
+              sudo systemctl disable frontend
+              sudo rm -f /etc/systemd/system/frontend.service
+              sudo systemctl daemon-reload
+            fi
 
-            pip install --upgrade pip
-            pip install -r requirements.txt
+            # 4. Authenticate local EC2 Docker engine with AWS ECR
+            # We pass down the runner session credentials on the fly securely
+            export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
+            export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+            export AWS_DEFAULT_REGION="us-west-2"
+            
+            aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
 
-            sudo tee /etc/systemd/system/frontend.service > /dev/null <<EOF
-            [Unit]
-            Description=Streamlit Frontend App
-            After=network.target
+            # 5. Drop the old container instance to free up the network port
+            echo "Cleaning up old frontend container instances..."
+            docker stop frontend-container || true
+            docker rm frontend-container || true
 
-            [Service]
-            User=ec2-user
-            WorkingDirectory=/home/ec2-user/front/Java-springboot-project/frontend
+            # 6. Pull the fresh image variant straight from AWS ECR
+            REGISTRY_IMAGE="${{ steps.login-ecr.outputs.registry }}/frontend:latest"
+            docker pull $REGISTRY_IMAGE
 
-            ExecStart=/bin/bash -c 'source /home/ec2-user/front/Java-springboot-project/frontend/venv/bin/activate && streamlit run app.py --server.port=8501 --server.address=0.0.0.0'
+            # 7. Start the container (Executes as non-root user via Dockerfile)
+            docker run -d \
+              --name frontend-container \
+              -p 8501:8501 \
+              -e API_URL="http://localhost:8084" \
+              $REGISTRY_IMAGE
 
-            Environment=API_URL=http://localhost:8084
+            echo "Deployment completed successfully!"
 
-            Restart=always
-            RestartSec=5
-
-            StandardOutput=append:/home/ec2-user/frontend.log
-            StandardError=append:/home/ec2-user/frontend-error.log
-
-            [Install]
-            WantedBy=multi-user.target
-            EOF
-
-            sudo systemctl daemon-reload
-            sudo systemctl enable frontend
-            sudo systemctl restart frontend
-
-            echo "Deployment completed."
-
-      ######################################################
-      # Email Notification
-      ######################################################
-
+      # ==========================================
+      # REPORTING OUTCOMES
+      # ==========================================
       - name: 📧 Send Deployment Report
-        if: success() || failure()
+        if: always()
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
@@ -161,25 +326,18 @@ jobs:
           subject: AI Deployment Report - ${{ github.repository }}
           to: ${{ secrets.EMAIL_TO }}
           from: ${{ secrets.EMAIL_USERNAME }}
-
           body: |
-            🚀 AI Deployment Report
+            🚀 AI Frontend Deployment Report
 
             Repository : ${{ github.repository }}
             Workflow   : ${{ github.workflow }}
             Branch     : ${{ github.ref_name }}
             Commit     : ${{ github.sha }}
-
             Status     : ${{ job.status }}
-
-            Triggered By : ${{ github.actor }}
-            Run Number   : ${{ github.run_number }}
+            Run Number : ${{ github.run_number }}
 
             SonarQube Analysis : Completed
             Quality Gate       : Passed
-
-            Deployment Target  : EC2
+            Deployment Target  : EC2 via AWS ECR
             Frontend URL       : http://${{ secrets.EC2_HOST }}:8501
 
-            Regards,
-            GitHub Actions
