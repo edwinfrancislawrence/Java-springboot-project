@@ -171,8 +171,11 @@
 #             SonarQube: Completed
 #             Quality Gate: Passed if workflow succeeded.
 
+#=================================================================
 
-name: Backend to EC2 (Dockerized)
+
+
+name: Backend to EC2 (Dockerized via ECR)
 
 on:
   workflow_dispatch:
@@ -185,18 +188,19 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Required by SonarQube for better analysis relevance
+          fetch-depth: 0 # Required by SonarQube for tracking metrics
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-          cache: 'maven'
-      
       # ==========================================
       # SONARQUBE ANALYSIS & QUALITY GATE
       # ==========================================
+      # - name: Set up Java for Scan
+      #   uses: actions/setup-java@v4
+      #   with:
+      #     distribution: 'temurin'
+      #     java-version: '17'
+      #     cache: 'maven'
+      
+      # # Runs compilation and analysis strictly inside GitHub Runner memory
       # - name: Build and SonarQube Scan
       #   working-directory: backend
       #   env:
@@ -219,9 +223,34 @@ jobs:
       #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
       # ==========================================
-      # DEPLOYMENT ROUTINES VIA SSH
+      # AWS ECR BUILD & PUSH (HEAVY LIFTING IN THE CLOUD)
       # ==========================================
-      - name: Prepare EC2 & Install Docker
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, Tag, and Push Backend Image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: backend # Make sure an ECR repository named 'backend' exists in your AWS Console
+          IMAGE_TAG: latest
+        run: |
+          # Moves into your backend folder context to process your multi-stage Dockerfile
+          cd backend
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+      # ==========================================
+      # DEPLOYMENT AUTOMATION VIA SSH (EC2 JUST RUNS IT)
+      # ==========================================
+      - name: Deploy via SSH to EC2
         uses: appleboy/ssh-action@v1.1.0
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -229,73 +258,52 @@ jobs:
           key: ${{ secrets.EC2_KEY }}
           script: |
             set -e
-            # Setup Docker engine on the host if not already available
+            echo "🚀 Starting backend container deployment..."
+
+            # 1. Ensure Docker is installed on the host machine
             if ! command -v docker &> /dev/null; then
               sudo dnf install -y docker || sudo yum install -y docker
               sudo systemctl enable docker --now
               sudo usermod -aG docker ec2-user
             fi
 
-      - name: Clone / Pull Repository
-        uses: appleboy/ssh-action@v1.1.0
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ec2-user
-          key: ${{ secrets.EC2_KEY }}
-          script: |
-            set -e
-            APP_DIR=/home/ec2-user/app
-            REPO_NAME=Java-springboot-project
-            REPO_URL=https://github.com/edwinfrancislawrence/Java-springboot-project.git
-            mkdir -p $APP_DIR
-            cd $APP_DIR
-            if [ -d "$REPO_NAME/.git" ]; then
-              cd $REPO_NAME
-              git reset --hard
-              git pull origin main
-            else
-              git clone $REPO_URL
-              cd $REPO_NAME
+            # 2. Ensure AWS CLI is present for authentication
+            if ! command -v aws &> /dev/null; then
+              sudo dnf install -y aws-cli || sudo yum install -y awscli
             fi
 
-      - name: Build Docker Image on EC2
-        uses: appleboy/ssh-action@v1.1.0
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ec2-user
-          key: ${{ secrets.EC2_KEY }}
-          script: |
-            cd /home/ec2-user/app/Java-springboot-project/backend
-            # Triggers your multi-stage Dockerfile build instructions securely
-            docker build -t backend-app:latest .
+            # 3. Authenticate local EC2 Docker engine with AWS ECR registry
+            export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
+            export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+            export AWS_DEFAULT_REGION="us-west-2"
+            
+            aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
 
-      - name: Stop and Remove Old Docker Container
-        uses: appleboy/ssh-action@v1.1.0
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ec2-user
-          key: ${{ secrets.EC2_KEY }}
-          script_stop: false
-          script: |
-            echo "Cleaning up old container instances..."
+            # 4. Stop old legacy non-docker processes if they're lurking on port 8084
+            PID=$(ps -ef | grep '[d]atastore-0.0.7.jar' | awk '{print $2}')
+            if [ ! -z "$PID" ]; then
+              echo "Stopping old native process: $PID"
+              kill -15 $PID && sleep 3
+            fi
+
+            # 5. Clean up stale backend container instances safely
             docker stop backend-container || true
             docker rm backend-container || true
 
-      - name: Start Docker Application (Runs as Non-Root Inside Container)
-        uses: appleboy/ssh-action@v1.1.0
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ec2-user
-          key: ${{ secrets.EC2_KEY }}
-          script: |
-            # Spin up the container passing your secrets explicitly to container flags
+            # 6. Fetch the newly compiled secure image asset
+            REGISTRY_IMAGE="${{ steps.login-ecr.outputs.registry }}/backend:latest"
+            docker pull $REGISTRY_IMAGE
+
+            # 7. Fire up the container environment (Executes securely under user 10001)
             docker run -d \
               --name backend-container \
               -p 8084:8084 \
               -e SPRING_DATASOURCE_URL="jdbc:mysql://${{ secrets.DB_HOST }}:3306/datastore?createDatabaseIfNotExist=true" \
               -e SPRING_DATASOURCE_USERNAME="${{ secrets.DB_USERNAME }}" \
               -e SPRING_DATASOURCE_PASSWORD="${{ secrets.DB_PASSWORD }}" \
-              backend-app:latest
+              $REGISTRY_IMAGE
+
+            echo "Backend application running smoothly inside Docker sandbox!"
 
       - name: Wait for App Startup
         uses: appleboy/ssh-action@v1.1.0
@@ -305,7 +313,7 @@ jobs:
           key: ${{ secrets.EC2_KEY }}
           script: sleep 15
 
-      - name: Verify Application
+      - name: Verify Application Health
         uses: appleboy/ssh-action@v1.1.0
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -316,6 +324,9 @@ jobs:
             echo "$HEALTH"
             [[ "$HEALTH" == *'"status":"UP"'* ]]
 
+      # ==========================================
+      # REPORTING OUTCOMES
+      # ==========================================
       - name: Send Deployment Report
         if: always()
         uses: dawidd6/action-send-mail@v3
