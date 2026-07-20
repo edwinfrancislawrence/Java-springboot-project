@@ -187,6 +187,165 @@
 
 #====================================================
 
+# name: Frontend to EC2 (Dockerized via ECR)
+
+# on:
+#   workflow_dispatch:
+
+# jobs:
+#   deploy:
+#     runs-on: ubuntu-latest
+
+#     steps:
+#       - name: Checkout Repository
+#         uses: actions/checkout@v4
+#         with:
+#           fetch-depth: 0
+
+#       # ==========================================
+#       # SONARQUBE QUALITY CHECKS
+#       # ==========================================
+#       # - name: Set up Java
+#       #   uses: actions/setup-java@v4
+#       #   with:
+#       #     distribution: temurin
+#       #     java-version: 17
+
+#       # - name: SonarQube Scan
+#       #   uses: SonarSource/sonarqube-scan-action@v5
+#       #   env:
+#       #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+#       #     SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+#       #   with:
+#       #     args: >
+#       #       -Dsonar.projectKey=frontend
+#       #       -Dsonar.projectName=frontend
+#       #       -Dsonar.sources=frontend
+
+#       # - name: SonarQube Quality Gate
+#       #   uses: SonarSource/sonarqube-quality-gate-action@v1.2.0
+#       #   timeout-minutes: 10
+#       #   env:
+#       #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+#       # ==========================================
+#       # AWS ECR BUILD & PUSH (RUNS IN GITHUB CLOUD)
+#       # ==========================================
+#       - name: Configure AWS Credentials
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#           aws-region: us-west-2
+
+#       - name: Login to Amazon ECR
+#         id: login-ecr
+#         uses: aws-actions/amazon-ecr-login@v2
+
+#       - name: Build, Tag, and Push Frontend Image to ECR
+#         env:
+#           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+#           ECR_REPOSITORY: frontend
+#           IMAGE_TAG: latest # Using latest allows the EC2 runner to pull it predictably
+#         run: |
+#           cd frontend
+#           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+#           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+#       # ==========================================
+#       # DEPLOYMENT ENGINE (RUNS VIA SSH ON EC2)
+#       # ==========================================
+#       - name: Deploy via SSH
+#         uses: appleboy/ssh-action@v1.1.0
+#         with:
+#           host: ${{ secrets.EC2_HOST }}
+#           username: ec2-user
+#           key: ${{ secrets.EC2_KEY }}
+#           script: |
+#             set -e
+#             echo "🚀 Starting deployment..."
+
+#             # 1. Ensure Docker is installed on the host machine
+#             if ! command -v docker &> /dev/null; then
+#               sudo dnf install -y docker || sudo yum install -y docker
+#               sudo systemctl enable docker --now
+#               sudo usermod -aG docker ec2-user
+#             fi
+
+#             # 2. Install AWS CLI on the host machine to allow ECR login
+#             if ! command -v aws &> /dev/null; then
+#               sudo dnf install -y aws-cli || sudo yum install -y awscli
+#             fi
+
+#             # 3. Clean up the deprecated systemd service if it was running before
+#             if systemctl is-active --quiet frontend; then
+#               sudo systemctl stop frontend
+#               sudo systemctl disable frontend
+#               sudo rm -f /etc/systemd/system/frontend.service
+#               sudo systemctl daemon-reload
+#             fi
+
+#             # 4. Authenticate local EC2 Docker engine with AWS ECR
+#             # We pass down the runner session credentials on the fly securely
+#             export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
+#             export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+#             export AWS_DEFAULT_REGION="us-west-2"
+            
+#             aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
+
+#             # 5. Drop the old container instance to free up the network port
+#             echo "Cleaning up old frontend container instances..."
+#             docker stop frontend-container || true
+#             docker rm frontend-container || true
+
+#             # 6. Pull the fresh image variant straight from AWS ECR
+#             REGISTRY_IMAGE="${{ steps.login-ecr.outputs.registry }}/frontend:latest"
+#             docker pull $REGISTRY_IMAGE
+
+#             # 7. Start the container using the secure docker group context
+#             sg docker -c "docker run -d \
+#               --name frontend-container \
+#               -p 80:8501 \
+#               -e API_URL='http://172.31.13.188:8084' \
+#               $REGISTRY_IMAGE \
+#               streamlit run app.py --global.developmentMode=false --server.address=0.0.0.0"
+
+#             echo "Deployment completed successfully!"
+
+#       # ==========================================
+#       # REPORTING OUTCOMES
+#       # ==========================================
+#       - name: 📧 Send Deployment Report
+#         if: always()
+#         uses: dawidd6/action-send-mail@v3
+#         with:
+#           server_address: smtp.gmail.com
+#           server_port: 465
+#           secure: true
+#           username: ${{ secrets.EMAIL_USERNAME }}
+#           password: ${{ secrets.EMAIL_PASSWORD }}
+#           subject: AI Deployment Report - ${{ github.repository }}
+#           to: ${{ secrets.EMAIL_TO }}
+#           from: ${{ secrets.EMAIL_USERNAME }}
+#           body: |
+#             🚀 AI Frontend Deployment Report
+
+#             Repository : ${{ github.repository }}
+#             Workflow   : ${{ github.workflow }}
+#             Branch     : ${{ github.ref_name }}
+#             Commit     : ${{ github.sha }}
+#             Status     : ${{ job.status }}
+#             Run Number : ${{ github.run_number }}
+
+#             SonarQube Analysis : Completed
+#             Quality Gate       : Passed
+#             Deployment Target  : EC2 via AWS ECR
+#             Frontend URL       : http://${{ secrets.EC2_HOST }}:8501
+
+
+#=================================================
+# Dockerized, NON-ROOT USER, SonarQube, Trivy Scan
+#=================================================
 name: Frontend to EC2 (Dockerized via ECR)
 
 on:
@@ -203,33 +362,33 @@ jobs:
           fetch-depth: 0
 
       # ==========================================
-      # SONARQUBE QUALITY CHECKS
+      # SONARQUBE QUALITY CHECKS (ACTIVATED)
       # ==========================================
-      # - name: Set up Java
-      #   uses: actions/setup-java@v4
-      #   with:
-      #     distribution: temurin
-      #     java-version: 17
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
 
-      # - name: SonarQube Scan
-      #   uses: SonarSource/sonarqube-scan-action@v5
-      #   env:
-      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-      #     SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-      #   with:
-      #     args: >
-      #       -Dsonar.projectKey=frontend
-      #       -Dsonar.projectName=frontend
-      #       -Dsonar.sources=frontend
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.projectKey=frontend
+            -Dsonar.projectName=frontend
+            -Dsonar.sources=frontend
 
-      # - name: SonarQube Quality Gate
-      #   uses: SonarSource/sonarqube-quality-gate-action@v1.2.0
-      #   timeout-minutes: 10
-      #   env:
-      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      - name: SonarQube Quality Gate
+        uses: SonarSource/sonarqube-quality-gate-action@v1.2.0
+        timeout-minutes: 10
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
       # ==========================================
-      # AWS ECR BUILD & PUSH (RUNS IN GITHUB CLOUD)
+      # AWS ECR CONFIGURATION
       # ==========================================
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -242,14 +401,40 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, Tag, and Push Frontend Image to ECR
+      # ==========================================
+      # DOCKER BUILD
+      # ==========================================
+      - name: Build Frontend Image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: frontend
-          IMAGE_TAG: latest # Using latest allows the EC2 runner to pull it predictably
+          IMAGE_TAG: latest
         run: |
           cd frontend
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+
+      # ==========================================
+      # TRIVY SECURITY VULNERABILITY SCAN
+      # ==========================================
+      - name: Run Trivy Security Scan (Container Image)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ steps.login-ecr.outputs.registry }}/frontend:latest'
+          format: 'table'
+          exit-code: '1' # Fails the pipeline if CRITICAL or HIGH flaws are found
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+      # ==========================================
+      # PUSH TO AMAZON ECR
+      # ==========================================
+      - name: Push Secure Frontend Image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: frontend
+          IMAGE_TAG: latest
+        run: |
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
       # ==========================================
@@ -286,7 +471,6 @@ jobs:
             fi
 
             # 4. Authenticate local EC2 Docker engine with AWS ECR
-            # We pass down the runner session credentials on the fly securely
             export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
             export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
             export AWS_DEFAULT_REGION="us-west-2"
