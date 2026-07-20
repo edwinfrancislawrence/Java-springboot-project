@@ -361,7 +361,7 @@
 #======================================================
 # NON-ROOT USER, Dockerized Sonarqube and Trivy Scan
 #======================================================
-name: Backend to EC2 (Dockerized via ECR with Trivy)
+name: Backend to EC2 (Dockerized via ECR with Trivy & Build Tag)
 
 on:
   workflow_dispatch:
@@ -426,7 +426,7 @@ jobs:
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: backend # Ensure an ECR repository named 'backend' exists in your AWS Console
-          IMAGE_TAG: latest
+          IMAGE_TAG: ${{ github.run_number }}
         run: |
           # Moves into your backend folder context to process your multi-stage Dockerfile
           cd backend
@@ -434,9 +434,9 @@ jobs:
 
       # Crucial Gate: Blocks the workflow if the image contains high-risk vulnerabilities
       - name: Run Trivy Vulnerability Scanner
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ steps.login-ecr.outputs.registry }}/backend:latest
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/backend:${{ github.run_number }}
           format: 'table'
           exit-code: '1' # Fails the pipeline if vulnerabilities matching severity are caught
           ignore-unfixed: true
@@ -447,7 +447,7 @@ jobs:
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: backend
-          IMAGE_TAG: latest
+          IMAGE_TAG: ${{ github.run_number }}
         run: |
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
@@ -504,7 +504,7 @@ jobs:
               docker rm backend-container || true
 
               echo 'Fetching newly compiled secure image...'
-              REGISTRY_IMAGE='${{ steps.login-ecr.outputs.registry }}/backend:latest'
+              REGISTRY_IMAGE='${{ steps.login-ecr.outputs.registry }}/backend:${{ github.run_number }}'
               docker pull \$REGISTRY_IMAGE
 
               echo 'Starting the backend sandbox container...'
