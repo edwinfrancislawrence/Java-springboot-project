@@ -302,12 +302,13 @@ jobs:
             REGISTRY_IMAGE="${{ steps.login-ecr.outputs.registry }}/frontend:latest"
             docker pull $REGISTRY_IMAGE
 
-            # 7. Start the container (Executes as non-root user via Dockerfile)
-            docker run -d \
+            # 7. Start the container using the secure docker group context
+            sg docker -c "docker run -d \
               --name frontend-container \
               -p 80:8501 \
-              -e API_URL="http://localhost:8084" \
-              $REGISTRY_IMAGE
+              -e API_URL='http://localhost:8084' \
+              $REGISTRY_IMAGE \
+              streamlit run app.py --global.developmentMode=false --server.address=0.0.0.0"
 
             echo "Deployment completed successfully!"
 
