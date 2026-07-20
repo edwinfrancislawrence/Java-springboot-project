@@ -53,7 +53,7 @@ ENV PYTHONPATH=/app/dependencies
 ENV PATH=/app/dependencies/bin:$PATH
 
 # Set environment variable
-ENV API_URL=http://35.164.134.252:8084
+ENV API_URL=http://35.89.23.210:8084
 
 EXPOSE 8501
 
