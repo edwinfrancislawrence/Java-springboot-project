@@ -306,7 +306,7 @@ jobs:
             sg docker -c "docker run -d \
               --name frontend-container \
               -p 80:8501 \
-              -e API_URL='http://localhost:8084' \
+              -e API_URL='http://172.31.13.188:8084' \
               $REGISTRY_IMAGE \
               streamlit run app.py --global.developmentMode=false --server.address=0.0.0.0"
 
