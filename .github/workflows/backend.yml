@@ -260,12 +260,18 @@ jobs:
             set -e
             echo "🚀 Starting backend container deployment..."
 
-            # 1. Ensure Docker is installed on the host machine
+            # 1. Install Docker if missing, and FORCE start the service
             if ! command -v docker &> /dev/null; then
               sudo dnf install -y docker || sudo yum install -y docker
-              sudo systemctl enable docker --now
-              sudo usermod -aG docker ec2-user
             fi
+            
+            # Crucial Fix: Explicitly start and enable the engine daemon
+            sudo systemctl daemon-reload
+            sudo systemctl enable docker --now
+            sudo systemctl start docker
+            
+            # Grant permissions to ec2-user
+            sudo usermod -aG docker ec2-user
 
             # 2. Ensure AWS CLI is present for authentication
             if ! command -v aws &> /dev/null; then
@@ -277,7 +283,8 @@ jobs:
             export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
             export AWS_DEFAULT_REGION="us-west-2"
             
-            aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
+            # Crucial Fix: Run docker commands using 'sg docker' so group changes apply immediately without a logout
+            sg docker -c "aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}"
 
             # 4. Stop old legacy non-docker processes if they're lurking on port 8084
             PID=$(ps -ef | grep '[d]atastore-0.0.7.jar' | awk '{print $2}')
@@ -286,22 +293,25 @@ jobs:
               kill -15 $PID && sleep 3
             fi
 
-            # 5. Clean up stale backend container instances safely
-            docker stop backend-container || true
-            docker rm backend-container || true
+            # 5. Execute all subsequent Docker runtime updates inside the docker group context
+            sg docker -c "
+              echo 'Cleaning up old backend container instances...'
+              docker stop backend-container || true
+              docker rm backend-container || true
 
-            # 6. Fetch the newly compiled secure image asset
-            REGISTRY_IMAGE="${{ steps.login-ecr.outputs.registry }}/backend:latest"
-            docker pull $REGISTRY_IMAGE
+              echo 'Fetching newly compiled secure image...'
+              REGISTRY_IMAGE='${{ steps.login-ecr.outputs.registry }}/backend:latest'
+              docker pull \$REGISTRY_IMAGE
 
-            # 7. Fire up the container environment (Executes securely under user 10001)
-            docker run -d \
-              --name backend-container \
-              -p 8084:8084 \
-              -e SPRING_DATASOURCE_URL="jdbc:mysql://${{ secrets.DB_HOST }}:3306/datastore?createDatabaseIfNotExist=true" \
-              -e SPRING_DATASOURCE_USERNAME="${{ secrets.DB_USERNAME }}" \
-              -e SPRING_DATASOURCE_PASSWORD="${{ secrets.DB_PASSWORD }}" \
-              $REGISTRY_IMAGE
+              echo 'Starting the backend sandbox container...'
+              docker run -d \
+                --name backend-container \
+                -p 8084:8084 \
+                -e SPRING_DATASOURCE_URL='jdbc:mysql://${{ secrets.DB_HOST }}:3306/datastore?createDatabaseIfNotExist=true' \
+                -e SPRING_DATASOURCE_USERNAME='${{ secrets.DB_USERNAME }}' \
+                -e SPRING_DATASOURCE_PASSWORD='${{ secrets.DB_PASSWORD }}' \
+                \$REGISTRY_IMAGE
+            "
 
             echo "Backend application running smoothly inside Docker sandbox!"
 
